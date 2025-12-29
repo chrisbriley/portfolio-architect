@@ -106,7 +106,11 @@ function App() {
       setResults(data);
 
     } catch (err) {
-      setError(err.message || "Connection failed. Is the backend running?");
+      let msg = err.message;
+      if (msg === 'Failed to fetch') {
+        msg = "Server timeout. The analysis took too long or the backend is waking up. Please try again.";
+      }
+      setError(msg || "Connection failed. Is the backend running?");
     } finally {
       setIsLoading(false);
     }

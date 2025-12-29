@@ -46,10 +46,18 @@ def optimize_portfolio():
         rf_rate = get_risk_free_rate()
         print(f"Risk Free Rate: {rf_rate*100:.2f}%")
 
-        raw = yf.download(tickers, period="3y", auto_adjust=True)
-        try: prices = raw['Close'] if 'Close' in raw.columns and isinstance(raw.columns, pd.MultiIndex) else raw['Close']
-        except: prices = raw
-        prices = prices.dropna()
+        # Optimization: Download User Tickers AND Benchmarks together to save time
+        benchmark_tickers = ["SPY", "BND", "GLD", "SHY", "TLT"]
+        all_tickers = list(set(tickers + benchmark_tickers))
+        
+        raw = yf.download(all_tickers, period="3y", auto_adjust=True)
+        try: all_prices = raw['Close'] if 'Close' in raw.columns and isinstance(raw.columns, pd.MultiIndex) else raw['Close']
+        except: all_prices = raw
+        
+        valid_tickers = [t for t in tickers if t in all_prices.columns]
+        if len(valid_tickers) < 2: return jsonify({"error": "Need 2+ valid tickers."}), 400
+        
+        prices = all_prices[valid_tickers].dropna()
         if prices.shape[0] < 30: return jsonify({"error": "Insufficient history."}), 400
 
         # 1. Main Optimization
@@ -62,12 +70,11 @@ def optimize_portfolio():
         # 3. Benchmarks
         benchmarks = {}
         def get_benchmark_data():
-            t = ["SPY", "BND", "GLD", "SHY", "TLT"]
-            d = yf.download(t, start=prices.index[0], end=prices.index[-1], progress=False, auto_adjust=True)
-            try: p = d['Close'] if 'Close' in d.columns and isinstance(d.columns, pd.MultiIndex) else d['Close']
-            except: p = d
-            if p.empty: return {}
-            r = p.pct_change().dropna()
+            valid_bench = [b for b in benchmark_tickers if b in all_prices.columns]
+            if not valid_bench: return {}
+            b_subset = all_prices[valid_bench].reindex(prices.index).ffill().dropna()
+            if b_subset.empty: return {}
+            r = b_subset.pct_change().dropna()
             b_cov = r.cov()
             b_defs = {"60/40": {"SPY":0.6, "BND":0.4}, "Permanent": {"SPY":0.25, "TLT":0.25, "GLD":0.25, "SHY":0.25}}
             b_out = {}
