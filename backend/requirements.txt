@@ -3,4 +3,5 @@ Flask-Cors
 yfinance
 pandas
 numpy
+scipy
 gunicorn
