@@ -17,6 +17,10 @@ def get_risk_free_rate():
         return hist['Close'].iloc[-1] / 100.0
     except: return 0.045
 
+@app.route('/')
+def home():
+    return "Portfolio Optimizer API is running. Please use the frontend application."
+
 @app.route('/api/optimize', methods=['POST'])
 def optimize_portfolio():
     try:
