@@ -22,11 +22,11 @@ def run_risk_parity(cov_matrix, min_w=0.0, max_w=1.0):
     constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
     bounds = tuple((min_w, max_w) for _ in range(n))
     try:
-        res = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints, tol=1e-10)
+        res = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints, tol=1e-4)
         return res.x
     except: return initial_weights
 
-def run_max_sharpe(mean_rets, cov_matrix, rf_rate, min_w=0.0, max_w=1.0):
+def run_max_sharpe(mean_rets, cov_matrix, rf_rate, min_w=0.0, max_w=1.0, tol=1e-6):
     n = len(mean_rets)
     initial_weights = np.ones(n) / n
     def objective(w):
@@ -40,7 +40,7 @@ def run_max_sharpe(mean_rets, cov_matrix, rf_rate, min_w=0.0, max_w=1.0):
     constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
     bounds = tuple((min_w, max_w) for _ in range(n))
     try:
-        res = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints)
+        res = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints, tol=tol)
         return res.x
     except: return initial_weights
 
@@ -103,7 +103,8 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value=None, t
         
         cov, shrink = get_shrunk_covariance(rets)
         mean = get_ewma_means(rets, span=w)
-        w_ms = run_max_sharpe(mean, cov, rf_rate)
+        # Use a loose tolerance for the lookback search to improve speed
+        w_ms = run_max_sharpe(mean, cov, rf_rate, tol=1e-3)
         _, _, score = calculate_metrics(w_ms, mean, cov, rf_rate)
         
         if score > best_score:
