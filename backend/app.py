@@ -3,6 +3,7 @@ from flask_cors import CORS
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import time
 from portfolio_lib.optimizers import find_optimal_allocations, calculate_metrics, get_portfolio_history, get_risk_contribution, calculate_historical_var
 from portfolio_lib.visuals import generate_dendrogram_image, generate_efficient_frontier
 
@@ -24,6 +25,7 @@ def home():
 @app.route('/api/optimize', methods=['POST'])
 def optimize_portfolio():
     try:
+        start_total = time.time()
         data = request.json
         tickers = data.get('tickers', [])
         min_w = float(data.get('min_weight', 0)) / 100.0
@@ -50,7 +52,9 @@ def optimize_portfolio():
         benchmark_tickers = ["SPY", "BND", "GLD", "SHY", "TLT"]
         all_tickers = list(set(tickers + benchmark_tickers))
         
+        t0 = time.time()
         raw = yf.download(all_tickers, period="3y", auto_adjust=True)
+        print(f"[Timing] Data Download ({len(all_tickers)} tickers): {time.time() - t0:.2f}s")
         try: all_prices = raw['Close'] if 'Close' in raw.columns and isinstance(raw.columns, pd.MultiIndex) else raw['Close']
         except: all_prices = raw
         
@@ -61,13 +65,18 @@ def optimize_portfolio():
         if prices.shape[0] < 30: return jsonify({"error": "Insufficient history."}), 400
 
         # 1. Main Optimization
+        t1 = time.time()
         result = find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value, target_mode)
+        print(f"[Timing] Optimization: {time.time() - t1:.2f}s")
 
         # 2. Visuals
+        t2 = time.time()
         dendrogram_b64 = generate_dendrogram_image(result['debug_cov'])
         frontier_cloud = generate_efficient_frontier(result['debug_mean'], result['debug_cov'])
+        print(f"[Timing] Visuals: {time.time() - t2:.2f}s")
 
         # 3. Benchmarks
+        t3 = time.time()
         benchmarks = {}
         def get_benchmark_data():
             valid_bench = [b for b in benchmark_tickers if b in all_prices.columns]
@@ -109,6 +118,7 @@ def optimize_portfolio():
             return b_out
             
         benchmarks = get_benchmark_data()
+        print(f"[Timing] Benchmarks: {time.time() - t3:.2f}s")
 
         # 4. Recent Prices
         last_prices = []
@@ -140,6 +150,7 @@ def optimize_portfolio():
                     "risk_decomposition": s_data[mode]['risk_decomposition']
                 }
 
+        print(f"[Timing] Total Request: {time.time() - start_total:.2f}s")
         return jsonify({
             "status": "success",
             "meta": {

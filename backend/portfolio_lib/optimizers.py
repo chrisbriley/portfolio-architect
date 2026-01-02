@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import time
 from scipy.optimize import minimize
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import squareform
@@ -95,12 +96,14 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value=None, t
     if len(prices) < 200: windows = [len(prices) - 5]
     best_score = -np.inf; best_window = 252; best_stats = {}
 
+    t_regime = time.time()
     for w in windows:
         if w >= len(prices): continue
         recent = prices.iloc[-w:]
         rets = recent.pct_change().dropna()
         if rets.empty: continue
         
+        t_w = time.time()
         cov, shrink = get_shrunk_covariance(rets)
         mean = get_ewma_means(rets, span=w)
         # Use a loose tolerance for the lookback search to improve speed
@@ -110,6 +113,8 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value=None, t
         if score > best_score:
             best_score = score; best_window = w
             best_stats = {'returns': rets, 'mean': mean, 'cov': cov, 'shrink': shrink}
+        print(f"  [Timing] Window {w}: {time.time() - t_w:.2f}s")
+    print(f"[Timing] Regime Analysis: {time.time() - t_regime:.2f}s")
     
     if not best_stats: raise ValueError("Optimization failed")
 
@@ -147,6 +152,7 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value=None, t
             "risk_decomposition": risk_data
         }
 
+    t_strat = time.time()
     strategies = {
         "Risk Parity": {
             "unconstrained": bundle(run_risk_parity(best_stats['cov'])),
@@ -161,6 +167,7 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value=None, t
             "constrained": bundle(run_hrp(best_stats['cov']))
         }
     }
+    print(f"[Timing] Strategy Calculation: {time.time() - t_strat:.2f}s")
 
     std = np.sqrt(np.diag(best_stats['cov']))
     corr_matrix = best_stats['cov'] / np.outer(std, std)
