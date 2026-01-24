@@ -102,6 +102,14 @@ class TestOptimizers(unittest.TestCase):
         weights = optimizers.run_max_sharpe(neg_mean, self.cov, rf_rate=0.0)
         self.assertAlmostEqual(np.sum(weights), 1.0)
 
+    def test_run_hrp_validity(self):
+        """Test HRP optimization runs without error on standard float data."""
+        # HRP relies on clustering which involves linkage matrices of floats.
+        # This ensures the int64 casting fix works.
+        weights = optimizers.run_hrp(self.cov)
+        self.assertAlmostEqual(np.sum(weights), 1.0)
+        self.assertFalse(np.isnan(weights).any())
+
 class TestVisuals(unittest.TestCase):
     def test_generate_dendrogram_empty(self):
         """Test dendrogram generation with invalid input."""

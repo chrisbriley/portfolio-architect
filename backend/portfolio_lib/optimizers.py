@@ -97,15 +97,15 @@ def run_hrp(cov_matrix):
         return w
 
     def get_quasi_diag(link):
-        link = link.astype(int)
-        sort_ix = pd.Series([link[-1, 0], link[-1, 1]])
-        num_items = link[-1, 3]
+        # link is float array. We only need indices (cols 0,1) and count (col 3) as ints.
+        sort_ix = pd.Series([int(link[-1, 0]), int(link[-1, 1])])
+        num_items = int(link[-1, 3])
         while sort_ix.max() >= num_items:
             sort_ix.index = range(0, sort_ix.shape[0] * 2, 2)
             df0 = sort_ix[sort_ix >= num_items]
-            i = df0.index; j = df0.values - num_items
-            sort_ix[i] = link[j, 0]
-            df0 = pd.Series(link[j, 1], index=i + 1)
+            i = df0.index; j = (df0.values - num_items).astype(int)
+            sort_ix[i] = link[j, 0].astype(int)
+            df0 = pd.Series(link[j, 1].astype(int), index=i + 1)
             sort_ix = pd.concat([sort_ix, df0]).sort_index()
             sort_ix.index = range(sort_ix.shape[0])
         return sort_ix.tolist()
