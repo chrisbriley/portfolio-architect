@@ -97,18 +97,25 @@ def run_hrp(cov_matrix):
         return w
 
     def get_quasi_diag(link):
-        # link is float array. We only need indices (cols 0,1) and count (col 3) as ints.
-        sort_ix = pd.Series([int(link[-1, 0]), int(link[-1, 1])])
+        # Optimized list-based implementation to avoid pandas int64 casting issues
+        link = np.array(link)
+        sort_ix = [int(link[-1, 0]), int(link[-1, 1])]
         num_items = int(link[-1, 3])
-        while sort_ix.max() >= num_items:
-            sort_ix.index = range(0, sort_ix.shape[0] * 2, 2)
-            df0 = sort_ix[sort_ix >= num_items]
-            i = df0.index; j = (df0.values - num_items).astype(int)
-            sort_ix[i] = link[j, 0].astype(int)
-            df0 = pd.Series(link[j, 1].astype(int), index=i + 1)
-            sort_ix = pd.concat([sort_ix, df0]).sort_index()
-            sort_ix.index = range(sort_ix.shape[0])
-        return sort_ix.tolist()
+        
+        while max(sort_ix) >= num_items:
+            new_sort_ix = []
+            for idx in sort_ix:
+                if idx >= num_items:
+                    # It's a cluster, decompose it
+                    # Row index in link matrix is (cluster_idx - num_items)
+                    row_idx = int(idx) - num_items
+                    new_sort_ix.append(int(link[row_idx, 0]))
+                    new_sort_ix.append(int(link[row_idx, 1]))
+                else:
+                    # It's a leaf (original item), keep it
+                    new_sort_ix.append(idx)
+            sort_ix = new_sort_ix
+        return sort_ix
 
     sort_ix = get_quasi_diag(link)
     sort_ix = corr.index[sort_ix].tolist()

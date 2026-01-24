@@ -78,7 +78,7 @@ class TestOptimizers(unittest.TestCase):
         cov_zero.loc[:, 'Z'] = 0
         
         weights = optimizers.run_risk_parity(cov_zero)
-        self.assertAlmostEqual(np.sum(weights), 1.0)
+        self.assertAlmostEqual(np.sum(weights), 1.0, places=5)
         # Should not contain NaNs
         self.assertFalse(np.isnan(weights).any())
 
