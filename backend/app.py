@@ -4,6 +4,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import time
+import traceback
 from portfolio_lib.optimizers import find_optimal_allocations, calculate_metrics, get_portfolio_history, get_risk_contribution, calculate_historical_var
 from portfolio_lib.visuals import generate_dendrogram_image, generate_efficient_frontier
 
@@ -107,7 +108,7 @@ def optimize_portfolio():
             b_defs = {"60/40": {"SPY":0.6, "BND":0.4}, "Permanent": {"SPY":0.25, "TLT":0.25, "GLD":0.25, "SHY":0.25}}
             b_out = {}
             for name, w_dict in b_defs.items():
-                w_s = pd.Series(0, index=r.columns)
+                w_s = pd.Series(0.0, index=r.columns)
                 for k,v in w_dict.items(): 
                     if k in r.columns: w_s[k] = v
                 if w_s.sum() > 0: w_s /= w_s.sum()
@@ -197,6 +198,7 @@ def optimize_portfolio():
 
     except Exception as e:
         print(f"Error: {e}")
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
