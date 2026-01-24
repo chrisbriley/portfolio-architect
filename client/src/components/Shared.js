@@ -27,16 +27,17 @@ export const CombinedChart = ({ strategies, benchmarks }) => {
   // We'll assume all histories share the same dates (which they do from the backend).
   
   // Base data on the first strategy's history
-  const baseHistory = strategies["Risk Parity"].constrained.history;
+  const baseHistory = strategies["Risk Parity"]?.constrained?.history || [];
+  if (baseHistory.length === 0) return null;
   
   const mergedData = baseHistory.map((day, index) => {
     const row = { date: day.date };
     
     // Add Strategies (Constrained usually)
-    row["Risk Parity"] = strategies["Risk Parity"].constrained.history[index]?.value;
-    row["Max Sharpe"] = strategies["Max Sharpe"].constrained.history[index]?.value;
-    row["HRP"] = strategies["HRP"].unconstrained.history[index]?.value; // HRP is unconstrained
-    row["MDP"] = strategies["MDP"].constrained.history[index]?.value;
+    row["Risk Parity"] = strategies["Risk Parity"]?.constrained?.history[index]?.value;
+    row["Max Sharpe"] = strategies["Max Sharpe"]?.constrained?.history[index]?.value;
+    row["HRP"] = strategies["HRP"]?.unconstrained?.history[index]?.value; // HRP is unconstrained
+    row["MDP"] = strategies["MDP"]?.constrained?.history[index]?.value;
     
     // Add Benchmarks
     if (benchmarks) {

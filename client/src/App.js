@@ -105,6 +105,11 @@ function App() {
       }
 
       const data = await response.json();
+      
+      // Validate data structure before setting state to prevent crashes
+      if (!data || !data.strategies) {
+        throw new Error("Invalid response format from server");
+      }
       setResults(data);
 
     } catch (err) {
@@ -126,7 +131,7 @@ function App() {
 
   // --- DYNAMIC LEVERAGE SCALING ---
   const processedResults = useMemo(() => {
-    if (!results) return null;
+    if (!results || !results.strategies) return null;
     if (targetVal === 0) return results; // No leverage, return raw
 
     const scaleFactor = (current, target) => {

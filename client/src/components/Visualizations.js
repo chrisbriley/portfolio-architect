@@ -14,12 +14,12 @@ export const DendrogramViewer = ({ imageBase64 }) => {
 
 export const EfficientFrontierChart = ({ cloudData, strategies, benchmarks }) => {
   if (!cloudData || !strategies) return null;
-  const strategyPoints = [
-    { name: "Risk Parity", x: strategies["Risk Parity"].constrained.metrics.volatility, y: strategies["Risk Parity"].constrained.metrics.return, color: "#27ae60" },
-    { name: "Max Sharpe", x: strategies["Max Sharpe"].constrained.metrics.volatility, y: strategies["Max Sharpe"].constrained.metrics.return, color: "#2980b9" },
-    { name: "HRP", x: strategies["HRP"].unconstrained.metrics.volatility, y: strategies["HRP"].unconstrained.metrics.return, color: "#8e44ad" },
-    { name: "MDP", x: strategies["MDP"].constrained.metrics.volatility, y: strategies["MDP"].constrained.metrics.return, color: "#d35400" },
-  ];
+  
+  const strategyPoints = [];
+  if (strategies["Risk Parity"]?.constrained) strategyPoints.push({ name: "Risk Parity", x: strategies["Risk Parity"].constrained.metrics.volatility, y: strategies["Risk Parity"].constrained.metrics.return, color: "#27ae60" });
+  if (strategies["Max Sharpe"]?.constrained) strategyPoints.push({ name: "Max Sharpe", x: strategies["Max Sharpe"].constrained.metrics.volatility, y: strategies["Max Sharpe"].constrained.metrics.return, color: "#2980b9" });
+  if (strategies["HRP"]?.unconstrained) strategyPoints.push({ name: "HRP", x: strategies["HRP"].unconstrained.metrics.volatility, y: strategies["HRP"].unconstrained.metrics.return, color: "#8e44ad" });
+  if (strategies["MDP"]?.constrained) strategyPoints.push({ name: "MDP", x: strategies["MDP"].constrained.metrics.volatility, y: strategies["MDP"].constrained.metrics.return, color: "#d35400" });
 
   if (benchmarks) {
       if (benchmarks["60/40"]) strategyPoints.push({ name: "60/40", x: benchmarks["60/40"].volatility, y: benchmarks["60/40"].return, color: "#7f8c8d" });
