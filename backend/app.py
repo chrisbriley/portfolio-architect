@@ -10,6 +10,8 @@ from portfolio_lib.visuals import generate_dendrogram_image, generate_efficient_
 app = Flask(__name__)
 CORS(app)
 
+NAME_CACHE = {}
+
 def get_risk_free_rate():
     try:
         ticker = yf.Ticker("^IRX")
@@ -63,10 +65,27 @@ def optimize_portfolio():
         
         prices = all_prices[valid_tickers].dropna()
         if prices.shape[0] < 30: return jsonify({"error": "Insufficient history."}), 400
+        
+        # Fetch Asset Names
+        asset_names = {}
+        for t in valid_tickers:
+            if t in NAME_CACHE:
+                asset_names[t] = NAME_CACHE[t]
+            else:
+                try:
+                    name = yf.Ticker(t).info.get('longName', t)
+                    asset_names[t] = name
+                    NAME_CACHE[t] = name
+                except: asset_names[t] = t
+
+        # Extract SPY for Beta calculation
+        spy_rets = None
+        if "SPY" in all_prices.columns:
+            spy_rets = all_prices["SPY"].pct_change().dropna()
 
         # 1. Main Optimization
         t1 = time.time()
-        result = find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value, target_mode)
+        result = find_optimal_allocations(prices, min_w, max_w, rf_rate, spy_rets, target_value, target_mode)
         print(f"[Timing] Optimization: {time.time() - t1:.2f}s")
 
         # 2. Visuals
@@ -121,11 +140,18 @@ def optimize_portfolio():
         print(f"[Timing] Benchmarks: {time.time() - t3:.2f}s")
 
         # 4. Recent Prices
-        last_prices = []
-        for date, row in prices.tail(5).sort_index(ascending=False).iterrows():
-            row_dict = {"date": date.strftime('%Y-%m-%d')}
-            row_dict.update({k: round(v, 2) for k, v in row.items()})
-            last_prices.append(row_dict)
+        # Generate Sparklines (over applicable lookback period)
+        sparklines = {}
+        recent = prices.tail(result['lookback_days'])
+        for col in recent.columns:
+            vals = recent[col].values
+            if len(vals) > 0:
+                # Normalize to base 100
+                norm = (vals / vals[0]) * 100
+                sparklines[col] = np.round(norm, 2).tolist()
+        
+        # Current Prices (Last available price)
+        current_prices = {col: round(prices[col].iloc[-1], 2) for col in prices.columns}
 
         # 5. Format Strategies (CRITICAL FIX HERE)
         formatted = {}
@@ -143,7 +169,9 @@ def optimize_portfolio():
                         "return": round(s_data[mode]['metrics']['return']*100, 1),
                         "sharpe": round(s_data[mode]['metrics']['sharpe'], 2),
                         "volatility": round(s_data[mode]['metrics']['volatility']*100, 1),
-                        "var": s_data[mode]['metrics']['var'] # <--- THIS WAS MISSING
+                        "var": s_data[mode]['metrics']['var'],
+                        "beta": round(s_data[mode]['metrics']['beta'], 2),
+                        "corr_var": round(s_data[mode]['metrics']['corr_var'], 2)
                     },
                     "history": s_data[mode]['history'],
                     "drawdowns": s_data[mode]['drawdowns'],
@@ -160,9 +188,11 @@ def optimize_portfolio():
                 "dendrogram": dendrogram_b64,
                 "frontier": frontier_cloud
             },
-            "recent_prices": last_prices,
+            "sparklines": sparklines,
+            "current_prices": current_prices,
             "strategies": formatted,
-            "benchmarks": benchmarks
+            "benchmarks": benchmarks,
+            "asset_names": asset_names
         })
 
     except Exception as e:

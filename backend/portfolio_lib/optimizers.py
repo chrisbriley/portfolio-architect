@@ -1,12 +1,13 @@
 import numpy as np
 import pandas as pd
 import time
+import os
 from scipy.optimize import minimize
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import squareform
 from .math_utils import (
     get_shrunk_covariance, get_ewma_means, calculate_metrics, 
-    get_portfolio_history, get_risk_contribution, apply_target_volatility,
+    get_portfolio_history, get_risk_contribution, apply_target_volatility, calculate_beta,
     calculate_historical_var, apply_target_var
 )
 
@@ -18,6 +19,8 @@ def run_risk_parity(cov_matrix, min_w=0.0, max_w=1.0):
         w = np.array(w)
         p_vol = np.sqrt(np.dot(w.T, np.dot(cov_scaled, w)))
         rc = w * (np.dot(cov_scaled, w) / p_vol)
+        # Avoid division by zero if volatility is negligible
+        rc = w * (np.dot(cov_scaled, w) / p_vol) if p_vol > 1e-8 else np.zeros_like(w)
         target = p_vol / n
         return np.sum(np.square(rc - target)) * 1000
     constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
@@ -25,7 +28,7 @@ def run_risk_parity(cov_matrix, min_w=0.0, max_w=1.0):
     try:
         res = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints, tol=1e-4)
         return res.x
-    except: return initial_weights
+    except Exception: return initial_weights
 
 def run_max_sharpe(mean_rets, cov_matrix, rf_rate, min_w=0.0, max_w=1.0, tol=1e-6):
     n = len(mean_rets)
@@ -43,7 +46,28 @@ def run_max_sharpe(mean_rets, cov_matrix, rf_rate, min_w=0.0, max_w=1.0, tol=1e-
     try:
         res = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints, tol=tol)
         return res.x
-    except: return initial_weights
+    except Exception: return initial_weights
+
+def run_mdp(cov_matrix):
+    """Most Diversified Portfolio: Maximize Diversification Ratio."""
+    n = cov_matrix.shape[0]
+    std_devs = np.sqrt(np.diag(cov_matrix))
+    initial_weights = np.ones(n) / n
+    
+    def objective(w):
+        w = np.array(w)
+        port_vol = np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
+        weighted_vol = np.sum(w * std_devs)
+        if port_vol == 0: return 0
+        # Maximize Ratio = Minimize negative log (for stability)
+        return np.log(port_vol) - np.log(weighted_vol)
+
+    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    bounds = tuple((0.0, 1.0) for _ in range(n))
+    try:
+        res = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints, tol=1e-5)
+        return res.x
+    except Exception: return initial_weights
 
 def run_hrp(cov_matrix):
     std_devs = np.sqrt(np.diag(cov_matrix))
@@ -91,9 +115,12 @@ def run_hrp(cov_matrix):
     hrp_weights = get_rec_bipart(cov_matrix, sort_ix)
     return hrp_weights[cov_matrix.columns].values
 
-def find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value=None, target_type="volatility"):
+def find_optimal_allocations(prices, min_w, max_w, rf_rate, benchmark_rets=None, target_value=None, target_type="volatility"):
     windows = [63, 126, 252, 504]
     if len(prices) < 200: windows = [len(prices) - 5]
+    # Performance: If many tickers, skip multi-window search to prevent timeout
+    if os.environ.get('RENDER') and prices.shape[1] > 10: windows = [252]
+    
     best_score = -np.inf; best_window = 252; best_stats = {}
 
     t_regime = time.time()
@@ -134,9 +161,29 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value=None, t
         rc = get_risk_contribution(w_final, best_stats['cov'])
         hist, drawdowns = get_portfolio_history(w_final, best_stats['returns'])
         
+        beta = 0.0
+        if benchmark_rets is not None:
+            beta = calculate_beta(w_final, best_stats['returns'], benchmark_rets)
+        
         # --- CALCULATE VAR ---
         var_95 = calculate_historical_var(w_final, best_stats['returns']) # <--- CALCULATION IS HERE
         
+        # --- CALCULATE CORRELATION VARIANCE (Std Dev of Correlations) ---
+        corr_var = 0.0
+        active_mask = w_final > 0.001
+        if np.sum(active_mask) > 1:
+            # Subset covariance to active assets
+            sub_cov = best_stats['cov'].iloc[active_mask, active_mask]
+            sub_std = np.sqrt(np.diag(sub_cov))
+            
+            with np.errstate(divide='ignore', invalid='ignore'):
+                sub_corr = sub_cov.values / np.outer(sub_std, sub_std)
+            sub_corr = np.nan_to_num(sub_corr, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Get off-diagonal elements
+            off_diag = sub_corr[~np.eye(sub_corr.shape[0], dtype=bool)]
+            corr_var = np.std(off_diag)
+
         risk_data = {"tickers": list(best_stats['cov'].columns), "weights": np.round(w_final * 100, 1).tolist(), "risk_contribution": np.round(rc * 100, 1).tolist()}
         
         return {
@@ -145,7 +192,9 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value=None, t
                 "return": r, 
                 "volatility": v, 
                 "sharpe": s, 
-                "var": var_95  # <--- PACKED INTO RESPONSE HERE
+                "var": var_95,
+                "beta": beta,
+                "corr_var": corr_var
             },
             "history": hist,
             "drawdowns": drawdowns,
@@ -165,19 +214,36 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, target_value=None, t
         "HRP": {
             "unconstrained": bundle(run_hrp(best_stats['cov'])),
             "constrained": bundle(run_hrp(best_stats['cov']))
+        },
+        "MDP": {
+            "unconstrained": bundle(run_mdp(best_stats['cov'])),
+            "constrained": bundle(run_mdp(best_stats['cov']))
         }
     }
     print(f"[Timing] Strategy Calculation: {time.time() - t_strat:.2f}s")
 
     std = np.sqrt(np.diag(best_stats['cov']))
     corr_matrix = best_stats['cov'] / np.outer(std, std)
-    corr_data = {"tickers": list(best_stats['cov'].columns), "matrix": np.round(corr_matrix.values, 2).tolist()}
+
+    # Also calculate raw correlation from the original returns
+    raw_cov = best_stats['returns'].cov()
+    raw_std = np.sqrt(np.diag(raw_cov))
+    raw_corr_matrix = raw_cov / np.outer(raw_std, raw_std)
+
+    # Sort by Average Correlation (Ascending: Uncorrelated/Inverse -> Highly Correlated)
+    avg_corr = corr_matrix.mean(axis=1)
+    sorted_tickers = avg_corr.sort_values(ascending=True).index
+    sorted_matrix = corr_matrix.loc[sorted_tickers, sorted_tickers]
+    sorted_raw_matrix = raw_corr_matrix.loc[sorted_tickers, sorted_tickers]
+
+    shrunk_corr_data = {"tickers": list(sorted_matrix.columns), "matrix": np.round(sorted_matrix.values, 2).tolist()}
+    raw_corr_data = {"tickers": list(sorted_raw_matrix.columns), "matrix": np.round(sorted_raw_matrix.values, 2).tolist()}
     
     return {
         "lookback_days": int(best_window),
         "shrinkage": best_stats['shrink'],
         "strategies": strategies,
-        "correlation": corr_data,
+        "correlation": {"shrunk": shrunk_corr_data, "raw": raw_corr_data},
         "debug_cov": best_stats['cov'],
         "debug_mean": best_stats['mean']
     }

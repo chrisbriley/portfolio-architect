@@ -36,6 +36,7 @@ export const CombinedChart = ({ strategies, benchmarks }) => {
     row["Risk Parity"] = strategies["Risk Parity"].constrained.history[index]?.value;
     row["Max Sharpe"] = strategies["Max Sharpe"].constrained.history[index]?.value;
     row["HRP"] = strategies["HRP"].unconstrained.history[index]?.value; // HRP is unconstrained
+    row["MDP"] = strategies["MDP"].constrained.history[index]?.value;
     
     // Add Benchmarks
     if (benchmarks) {
@@ -64,6 +65,7 @@ export const CombinedChart = ({ strategies, benchmarks }) => {
             <Line type="monotone" dataKey="Risk Parity" stroke="#27ae60" strokeWidth={2} dot={false} />
             <Line type="monotone" dataKey="Max Sharpe" stroke="#2980b9" strokeWidth={2} dot={false} />
             <Line type="monotone" dataKey="HRP" stroke="#8e44ad" strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="MDP" stroke="#d35400" strokeWidth={2} dot={false} />
             
             {/* Benchmarks (Dashed/Lighter) */}
             {benchmarks && (

@@ -23,6 +23,22 @@ def calculate_metrics(weights, mean_returns, cov_matrix, rf_rate=0.0):
     sharpe = excess_ret / effective_vol
     return ret, vol, sharpe
 
+def calculate_beta(weights, returns_df, benchmark_returns):
+    """Calculates portfolio beta relative to a benchmark (e.g., SPY)."""
+    if benchmark_returns.empty: return 0.0
+    
+    # Align data
+    common = returns_df.index.intersection(benchmark_returns.index)
+    if len(common) < 30: return 0.0
+    
+    port_rets = returns_df.loc[common].dot(weights)
+    bench_rets = benchmark_returns.loc[common]
+    
+    # Covariance(Rp, Rb) / Variance(Rb)
+    cov = np.cov(port_rets, bench_rets)[0, 1]
+    var = np.var(bench_rets, ddof=1)
+    return cov / var if var > 0 else 0.0
+
 def apply_target_volatility(weights, cov_matrix, target_vol=None):
     if target_vol is None: return weights
     current_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))) * np.sqrt(252)

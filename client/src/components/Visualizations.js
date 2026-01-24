@@ -12,13 +12,19 @@ export const DendrogramViewer = ({ imageBase64 }) => {
   );
 };
 
-export const EfficientFrontierChart = ({ cloudData, strategies }) => {
+export const EfficientFrontierChart = ({ cloudData, strategies, benchmarks }) => {
   if (!cloudData || !strategies) return null;
   const strategyPoints = [
     { name: "Risk Parity", x: strategies["Risk Parity"].constrained.metrics.volatility, y: strategies["Risk Parity"].constrained.metrics.return, color: "#27ae60" },
     { name: "Max Sharpe", x: strategies["Max Sharpe"].constrained.metrics.volatility, y: strategies["Max Sharpe"].constrained.metrics.return, color: "#2980b9" },
     { name: "HRP", x: strategies["HRP"].unconstrained.metrics.volatility, y: strategies["HRP"].unconstrained.metrics.return, color: "#8e44ad" },
+    { name: "MDP", x: strategies["MDP"].constrained.metrics.volatility, y: strategies["MDP"].constrained.metrics.return, color: "#d35400" },
   ];
+
+  if (benchmarks) {
+      if (benchmarks["60/40"]) strategyPoints.push({ name: "60/40", x: benchmarks["60/40"].volatility, y: benchmarks["60/40"].return, color: "#7f8c8d" });
+      if (benchmarks["Permanent"]) strategyPoints.push({ name: "Permanent", x: benchmarks["Permanent"].volatility, y: benchmarks["Permanent"].return, color: "#34495e" });
+  }
 
   return (
     <div className="diag-card" style={{ marginTop: '20px' }}>
@@ -29,11 +35,11 @@ export const EfficientFrontierChart = ({ cloudData, strategies }) => {
             <XAxis type="number" dataKey="x" name="Volatility" unit="%" domain={['auto', 'auto']} label={{ value: 'Risk (Volatility)', position: 'insideBottom', offset: -10 }} />
             <YAxis type="number" dataKey="y" name="Return" unit="%" domain={['auto', 'auto']} label={{ value: 'Return', angle: -90, position: 'insideLeft' }} />
             <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-            <Scatter name="Possible Portfolios" data={cloudData} fill="#e0e0e0" shape="circle" />
+            <Scatter name="Efficient Frontier" data={cloudData} fill="#95a5a6" line shape="circle" />
             {strategyPoints.map((point, index) => (
               <Scatter key={index} name={point.name} data={[point]} fill={point.color} shape="star" s={200}><Cell key={`cell-${index}`} fill={point.color} /></Scatter>
             ))}
-            <Legend />
+            <Legend verticalAlign="top" height={36} />
           </ScatterChart>
         </ResponsiveContainer>
       </div>

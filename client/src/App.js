@@ -1,14 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import './App.css';
 
 // Components
 import DiagnosisHeader from './components/DiagnosisHeader';
-import StrategyCard from './components/StrategyCard';
-import BenchmarkCard from './components/BenchmarkCard';
-import PriceTable from './components/PriceTable';
+import ModernStrategyCard from './components/ModernStrategyCard';
 import { CombinedChart } from './components/Shared';
 import { DendrogramViewer, EfficientFrontierChart } from './components/Visualizations';
-import { CorrelationHeatmap } from './components/Diagnostics';
+import CorrelationHeatmap from './components/CorrelationHeatmap';
 
 function App() {
   // --- STATE ---
@@ -19,6 +17,7 @@ function App() {
   // Leverage State
   const [targetVal, setTargetVal] = useState(0);
   const [targetMode, setTargetMode] = useState("volatility"); // 'volatility' or 'var'
+  const [borrowCost, setBorrowCost] = useState(5.5); // Default 5.5%
 
   const [results, setResults] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -26,6 +25,7 @@ function App() {
   
   // Tab State
   const [activeTab, setActiveTab] = useState("Risk Parity");
+  const [isConstrained, setIsConstrained] = useState(true);
 
   // Portfolio Management
   const [savedPortfolios, setSavedPortfolios] = useState([]);
@@ -46,7 +46,8 @@ function App() {
         min: minWeight, 
         max: maxWeight,
         targetVal,
-        targetMode
+        targetMode,
+        borrowCost
     };
     const updated = [...savedPortfolios, newPortfolio];
     setSavedPortfolios(updated);
@@ -60,6 +61,7 @@ function App() {
     if (p.max !== undefined) setMaxWeight(p.max);
     if (p.targetVal !== undefined) setTargetVal(p.targetVal);
     if (p.targetMode !== undefined) setTargetMode(p.targetMode);
+    if (p.borrowCost !== undefined) setBorrowCost(p.borrowCost);
   };
 
   const handleDeletePortfolio = (index, e) => {
@@ -92,8 +94,8 @@ function App() {
             tickers: tickersArray, 
             min_weight: minWeight, 
             max_weight: maxWeight,
-            target_value: targetVal,     // Send raw number
-            target_mode: targetMode      // Send mode (volatility vs var)
+            target_value: 0,             // Always fetch unlevered base
+            target_mode: 'volatility'
         }),
       });
 
@@ -122,107 +124,229 @@ function App() {
     return "Max Sharpe";
   };
 
+  // --- DYNAMIC LEVERAGE SCALING ---
+  const processedResults = useMemo(() => {
+    if (!results) return null;
+    if (targetVal === 0) return results; // No leverage, return raw
+
+    const scaleFactor = (current, target) => {
+        if (current <= 0) return 1;
+        let lev = target / current;
+        return Math.min(lev, 4.0); // Cap at 4x leverage
+    };
+
+    const scaleHistory = (history, leverage) => {
+        if (Math.abs(leverage - 1) < 0.01) return history;
+        const dailyBorrowRate = (borrowCost / 100) / 252;
+        const newHistory = [{date: history[0].date, value: 100}];
+        for (let i = 1; i < history.length; i++) {
+            const prevRaw = history[i-1].value;
+            const currRaw = history[i].value;
+            const ret = (prevRaw === 0) ? 0 : (currRaw / prevRaw) - 1;
+            const levRet = ret * leverage - (leverage - 1) * dailyBorrowRate;
+            const prevLev = newHistory[i-1].value;
+            const currLev = prevLev * (1 + levRet);
+            newHistory.push({date: history[i].date, value: currLev});
+        }
+        return newHistory;
+    };
+
+    const recalculateDrawdowns = (history) => {
+        let runningMax = -Infinity;
+        return history.map(point => {
+            if (point.value > runningMax) runningMax = point.value;
+            const dd = (point.value - runningMax) / runningMax;
+            return { date: point.date, value: Number((dd * 100).toFixed(2)) };
+        });
+    };
+
+    const newStrategies = {};
+    
+    Object.keys(results.strategies).forEach(stratName => {
+        newStrategies[stratName] = {};
+        ['constrained', 'unconstrained'].forEach(mode => {
+            const base = results.strategies[stratName][mode];
+            if (!base) return;
+
+            // Calculate Leverage
+            let leverage = 1.0;
+            if (targetMode === 'volatility') {
+                leverage = scaleFactor(base.metrics.volatility, targetVal);
+            } else if (targetMode === 'var') {
+                // VaR
+                leverage = scaleFactor(base.metrics.var, targetVal);
+            } else if (targetMode === 'leverage_ratio') {
+                leverage = targetVal / 100.0;
+            } 
+
+            // Scale Metrics
+            // R_levered = L * R_portfolio - (L-1) * R_borrow
+            const newReturn = leverage * base.metrics.return - (leverage - 1) * borrowCost;
+
+            const scaledHistory = scaleHistory(base.history, leverage);
+
+            // Scale Allocation
+            const newAllocation = {};
+            Object.keys(base.allocation).forEach(key => {
+                newAllocation[key] = Number((base.allocation[key] * leverage).toFixed(1));
+            });
+
+            newStrategies[stratName][mode] = {
+                ...base,
+                allocation: newAllocation,
+                metrics: {
+                    ...base.metrics,
+                    volatility: Number((base.metrics.volatility * leverage).toFixed(1)),
+                    return: Number(newReturn.toFixed(1)),
+                    var: Number((base.metrics.var * leverage).toFixed(2)),
+                    beta: Number((base.metrics.beta * leverage).toFixed(2)),
+                    corr_var: base.metrics.corr_var, // Correlation structure doesn't change
+                    leverage: Number((leverage * 100).toFixed(0))
+                },
+                history: scaledHistory,
+                drawdowns: recalculateDrawdowns(scaledHistory)
+            };
+        });
+    });
+
+    return {
+        ...results,
+        strategies: newStrategies
+    };
+  }, [results, targetVal, targetMode, borrowCost]);
+
   // --- RENDER ---
   return (
     <div className="App">
-      <header className="App-header">
-        <h1>Portfolio Architect</h1>
-        <p>Robust Optimization • Regime Analysis • Drift Detection</p>
-      </header>
-      <main>
+      {/* 1. SIDEBAR */}
+      <aside className="sidebar">
+        <div>
+            <h1>Portfolio Architect</h1>
+            <p>Robust Optimization • Regime Analysis</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="sidebar-group">
+            <div className="sidebar-group">
+                <label>Tickers</label>
+                <textarea 
+                    value={tickersInput} 
+                    onChange={(e) => setTickersInput(e.target.value)} 
+                    rows="4" 
+                    placeholder="e.g. VTI, TLT, GLD" 
+                />
+            </div>
+
+            <div className="sidebar-group">
+                <label>Constraints (%)</label>
+                <div style={{display:'flex', gap:'10px'}}>
+                    <input type="number" placeholder="Min" value={minWeight} onChange={e => setMinWeight(Number(e.target.value))} title="Min Weight" />
+                    <input type="number" placeholder="Max" value={maxWeight} onChange={e => setMaxWeight(Number(e.target.value))} title="Max Weight" />
+                </div>
+            </div>
+
+            <button type="submit" disabled={isLoading} className="run-btn">
+                {isLoading ? 'Running...' : 'Run Analysis'}
+            </button>
+        </form>
+
         {savedPortfolios.length > 0 && (
-          <div className="saved-portfolios">
+          <div className="sidebar-group" style={{marginTop:'20px'}}>
+              <label>Saved Portfolios</label>
               {savedPortfolios.map((p, idx) => (
-                  <div key={idx} onClick={() => handleLoadPortfolio(p)} className="portfolio-chip">
-                      📂 {p.name} <span className="delete-x" onClick={(e) => handleDeletePortfolio(idx, e)}>×</span>
+                  <div key={idx} onClick={() => handleLoadPortfolio(p)} style={{background:'#34495e', padding:'8px', borderRadius:'4px', cursor:'pointer', display:'flex', justifyContent:'space-between', marginBottom:'5px'}}>
+                      <span>{p.name}</span>
+                      <span onClick={(e) => handleDeletePortfolio(idx, e)} style={{color:'#e74c3c'}}>×</span>
                   </div>
               ))}
           </div>
         )}
+        
+        <div className="sidebar-group">
+            <input type="text" placeholder="Save current as..." value={portfolioName} onChange={(e) => setPortfolioName(e.target.value)} />
+            <button type="button" onClick={handleSavePortfolio} style={{background:'#27ae60', border:'none', color:'white', padding:'8px', borderRadius:'4px', cursor:'pointer', marginTop:'5px'}}>Save</button>
+        </div>
+      </aside>
 
-        <form onSubmit={handleSubmit} className="optimizer-form">
-          <div className="form-row">
-            {/* Left Column: Tickers */}
-            <div style={{flex: 2}}>
-              <label>Tickers:</label>
-              <textarea value={tickersInput} onChange={(e) => setTickersInput(e.target.value)} rows="3" placeholder="e.g. VTI, TLT, GLD, VNQ" />
-              <div className="save-controls">
-                  <input type="text" placeholder="Save name (e.g. All Weather)" value={portfolioName} onChange={(e) => setPortfolioName(e.target.value)} />
-                  <button type="button" onClick={handleSavePortfolio} className="save-btn">Save</button>
-              </div>
-            </div>
-
-            {/* Right Column: Constraints & Leverage */}
-            <div style={{flex: 1, display:'flex', flexDirection:'column', gap:'15px'}}>
-              
-              {/* Constraints Row */}
-              <div style={{display:'flex', gap:'10px'}}>
-                <div style={{flex:1}}>
-                    <label>Min Wgt (%)</label>
-                    <input type="number" value={minWeight} onChange={e => setMinWeight(Number(e.target.value))} />
-                </div>
-                <div style={{flex:1}}>
-                    <label>Max Wgt (%)</label>
-                    <input type="number" value={maxWeight} onChange={e => setMaxWeight(Number(e.target.value))} />
-                </div>
-              </div>
-
-              {/* Leverage Control */}
-              <div>
-                <label>Leverage Target</label>
-                <div className="leverage-control" style={{display:'flex', gap:'10px', alignItems:'center'}}>
-                    <select 
-                        value={targetMode} 
-                        onChange={e => setTargetMode(e.target.value)}
-                        style={{padding: '10px', borderRadius: '8px', border: '2px solid #ecf0f1', flex: 1, fontSize:'0.9rem'}}
-                    >
-                        <option value="volatility">Target Volatility (Ann.)</option>
-                        <option value="var">Target VaR (Daily 95%)</option>
-                    </select>
-                    
-                    <input 
-                        type="number" 
-                        placeholder="0 = None" 
-                        value={targetVal} 
-                        onChange={e => setTargetVal(Number(e.target.value))} 
-                        style={{width: '80px'}}
-                        title={targetMode === "volatility" ? "e.g. 15 for 15% Volatility" : "e.g. 1.5 for 1.5% Max Daily Loss"}
-                    />
-                </div>
-                <div style={{fontSize:'0.75rem', color:'#7f8c8d', marginTop:'5px', fontStyle:'italic'}}>
-                    {targetVal === 0 ? "No leverage applied." : 
-                     targetMode === "volatility" 
-                        ? `Scales portfolio to hit ${targetVal}% annualized volatility.` 
-                        : `Scales portfolio so 95% of days lose < ${targetVal}%.`}
-                </div>
-              </div>
-
-            </div>
-          </div>
-          <button type="submit" disabled={isLoading} className="run-btn">
-            {isLoading ? 'Running Analysis...' : 'Run Analysis'}
-          </button>
-        </form>
-
+      {/* 2. MAIN CONTENT */}
+      <main className="main-content">
         {error && <div className="error-message">⚠️ {error}</div>}
 
-        {results && (
+        {processedResults && (
           <div className="results-container">
             {/* 1. Header Diagnosis */}
-            <DiagnosisHeader lookback={results.meta.lookback} shrinkage={results.meta.shrinkage} />
+            <DiagnosisHeader lookback={processedResults.meta.lookback} shrinkage={processedResults.meta.shrinkage} />
 
-            {/* 2. Combined Chart */}
-            <CombinedChart strategies={results.strategies} benchmarks={results.benchmarks} />
+            {/* 2. Global Visuals Row */}
+            <div style={{display:'flex', flexDirection:'column', gap:'20px'}}>
+                
+                {/* NEW: Combined Container for Performance & Frontier with Controls */}
+                <div className="diag-card" style={{padding:'20px', background:'white'}}>
+                    {/* Controls Header */}
+                    <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px', borderBottom:'1px solid #eee', paddingBottom:'15px'}}>
+                        <h3 style={{margin:0, color:'#2c3e50'}}>Portfolio Performance & Risk</h3>
+                        
+                        <div style={{display:'flex', alignItems:'center', gap:'15px', background:'#f8f9fa', padding:'10px 20px', borderRadius:'8px'}}>
+                            <span style={{fontSize:'0.85rem', fontWeight:'bold', color:'#7f8c8d', textTransform:'uppercase'}}>Leverage Target:</span>
+                            <select 
+                                value={targetMode} 
+                                onChange={e => { setTargetMode(e.target.value); setTargetVal(0); }}
+                                style={{padding:'5px', borderRadius:'4px', border:'1px solid #ddd'}}
+                            >
+                                <option value="volatility">Target Volatility</option>
+                                <option value="var">Target VaR (95%)</option>
+                                <option value="leverage_ratio">Target Leverage %</option>
+                            </select>
+                            <input 
+                                type="range" 
+                                min="0" 
+                                max={targetMode === "volatility" ? "40" : targetMode === "var" ? "5" : "400"} 
+                                step={targetMode === "volatility" ? "1" : targetMode === "var" ? "0.1" : "25"}
+                                value={targetVal} 
+                                onChange={e => setTargetVal(Number(e.target.value))} 
+                                style={{width:'150px', cursor:'pointer'}}
+                            />
+                            <span style={{fontWeight:'bold', color:'#2c3e50', minWidth:'40px'}}>
+                                {targetVal > 0 ? targetVal + "%" : "Off"}
+                            </span>
 
-            {/* 3. Global Visualization Area */}
-            {results.meta.frontier && (
-                <EfficientFrontierChart cloudData={results.meta.frontier} strategies={results.strategies} />
-            )}
+                            <div style={{borderLeft: '2px solid #ddd', paddingLeft: '15px', marginLeft: '5px', display:'flex', alignItems:'center', gap:'10px'}}>
+                                <span style={{fontSize:'0.85rem', fontWeight:'bold', color:'#7f8c8d', textTransform:'uppercase'}}>Borrow Cost:</span>
+                                <input 
+                                    type="number"
+                                    value={borrowCost}
+                                    onChange={e => setBorrowCost(Number(e.target.value))}
+                                    style={{width:'60px', padding:'5px', borderRadius:'4px', border:'1px solid #ddd'}}
+                                    step="0.1"
+                                />
+                                <span style={{fontWeight:'bold', color:'#2c3e50'}}>%</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style={{display:'flex', gap:'20px', flexWrap:'wrap'}}>
+                        <div style={{flex:1, minWidth:'400px'}}>
+                            <CombinedChart strategies={processedResults.strategies} benchmarks={processedResults.benchmarks} />
+                        </div>
+                        <div style={{flex:1, minWidth:'400px'}}>
+                            <EfficientFrontierChart cloudData={processedResults.meta.frontier} strategies={processedResults.strategies} benchmarks={processedResults.benchmarks} />
+                        </div>
+                    </div>
+                </div>
+
+                <div style={{flex:1, minWidth:'400px'}}>
+                    <CorrelationHeatmap 
+                        correlationData={processedResults.meta.diagnostics.correlation} 
+                        assetNames={processedResults.asset_names}
+                        shrinkage={processedResults.meta.shrinkage}
+                    />
+                </div>
+            </div>
 
             {/* 4. Tab Navigation */}
-            <div className="tabs-header">
-                {["Risk Parity", "Max Sharpe", "HRP"].map(tab => {
-                    const rec = getRecommendedStrategy(results.meta.lookback, results.meta.shrinkage);
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', borderBottom:'2px solid #eee', paddingBottom:'10px', marginTop:'30px'}}>
+                <div className="tabs-header" style={{margin:0, border:0}}>
+                {["Risk Parity", "Max Sharpe", "HRP", "MDP"].map(tab => {
+                    const rec = getRecommendedStrategy(processedResults.meta.lookback, processedResults.meta.shrinkage);
                     const isRec = rec.includes(tab.split(" ")[0]);
                     return (
                         <button key={tab} className={`tab-btn ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
@@ -230,58 +354,32 @@ function App() {
                         </button>
                     );
                 })}
-                <button className={`tab-btn ${activeTab === "60/40" ? 'active' : ''}`} onClick={() => setActiveTab("60/40")}>60/40</button>
-                <button className={`tab-btn ${activeTab === "Permanent" ? 'active' : ''}`} onClick={() => setActiveTab("Permanent")}>Permanent</button>
+                </div>
+                
+                {/* Constrained Toggle */}
+                <div className="toggle-container">
+                    <div className={`toggle-btn ${!isConstrained ? 'active' : ''}`} onClick={() => setIsConstrained(false)}>Unconstrained</div>
+                    <div className={`toggle-btn ${isConstrained ? 'active' : ''}`} onClick={() => setIsConstrained(true)}>Constrained</div>
+                </div>
             </div>
 
             {/* 5. Tab Content */}
             <div className="tab-content">
-                {activeTab === "Risk Parity" && 
-                    <StrategyCard 
-                        title="Risk Parity" 
-                        data={results.strategies["Risk Parity"]} 
-                        color="#27ae60" 
-                        minWeight={minWeight} maxWeight={maxWeight}
-                        isRecommended={getRecommendedStrategy(results.meta.lookback, results.meta.shrinkage) === "Risk Parity"} 
-                        globalCorrelation={results.meta.diagnostics.correlation}
-                    />
-                }
-                {activeTab === "Max Sharpe" && 
-                    <StrategyCard 
-                        title="Max Sharpe" 
-                        data={results.strategies["Max Sharpe"]} 
-                        color="#2980b9" 
-                        minWeight={minWeight} maxWeight={maxWeight}
-                        isRecommended={getRecommendedStrategy(results.meta.lookback, results.meta.shrinkage) === "Max Sharpe"} 
-                        globalCorrelation={results.meta.diagnostics.correlation}
-                    />
-                }
-                {activeTab === "HRP" && (
+                {processedResults.strategies[activeTab] && (
                     <>
-                        <StrategyCard 
-                            title="HRP (Unconstrained Only)" 
-                            data={results.strategies["HRP"]} 
-                            color="#8e44ad" 
-                            minWeight={minWeight} maxWeight={maxWeight}
-                            isRecommended={getRecommendedStrategy(results.meta.lookback, results.meta.shrinkage).includes("HRP")} 
-                            globalCorrelation={results.meta.diagnostics.correlation}
+                        <ModernStrategyCard 
+                            title={`${activeTab} (${isConstrained ? 'Constrained' : 'Unconstrained'})`}
+                            data={processedResults.strategies[activeTab][isConstrained ? 'constrained' : 'unconstrained']} 
+                            color={activeTab === "Risk Parity" ? "#27ae60" : activeTab === "Max Sharpe" ? "#2980b9" : activeTab === "MDP" ? "#d35400" : "#8e44ad"} 
+                            sparklines={processedResults.sparklines}
+                            lookback={processedResults.meta.lookback}
+                            assetNames={processedResults.asset_names}
+                            currentPrices={processedResults.current_prices}
                         />
-                        {/* HRP Dendrogram */}
-                        <DendrogramViewer imageBase64={results.meta.dendrogram} />
+                        {activeTab === "HRP" && <DendrogramViewer imageBase64={processedResults.meta.dendrogram} />}
                     </>
                 )}
-                
-                {/* Benchmarks */}
-                {activeTab === "60/40" && results.benchmarks && (
-                    <BenchmarkCard title="Classic 60/40" data={results.benchmarks["60/40"]} color="#7f8c8d" />
-                )}
-                {activeTab === "Permanent" && results.benchmarks && (
-                    <BenchmarkCard title="Permanent Portfolio" data={results.benchmarks["Permanent"]} color="#d35400" />
-                )}
             </div>
-
-            {/* 6. Recent Prices */}
-            <PriceTable prices={results.recent_prices} />
           </div>
         )}
       </main>
