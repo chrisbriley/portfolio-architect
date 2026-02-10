@@ -123,13 +123,15 @@ def run_hrp(cov_matrix):
     return hrp_weights[cov_matrix.columns].values
 
 def find_optimal_allocations(prices, min_w, max_w, rf_rate, benchmark_rets=None, target_value=None, target_type="volatility"):
+    # Ensemble Strategy: Use multiple windows to stabilize weights
     windows = [63, 126, 252, 504]
     if len(prices) < 200: windows = [len(prices) - 5]
-    # Performance: If many tickers, skip multi-window search to prevent timeout
+    # Performance optimization for large tickers
     if os.environ.get('RENDER') and prices.shape[1] > 10: windows = [252]
     
-    best_score = -np.inf; best_window = 252; best_stats = {}
-
+    stats_list = []
+    reporting_stats = None
+    
     t_regime = time.time()
     for w in windows:
         if w >= len(prices): continue
@@ -140,58 +142,85 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, benchmark_rets=None,
         t_w = time.time()
         cov, shrink = get_shrunk_covariance(rets)
         mean = get_ewma_means(rets, span=w)
-        # Use a loose tolerance for the lookback search to improve speed
-        w_ms = run_max_sharpe(mean, cov, rf_rate, tol=1e-3)
-        _, _, score = calculate_metrics(w_ms, mean, cov, rf_rate)
         
-        if score > best_score:
-            best_score = score; best_window = w
-            best_stats = {'returns': rets, 'mean': mean, 'cov': cov, 'shrink': shrink}
+        stats = {
+            'window': w,
+            'returns': rets,
+            'mean': mean,
+            'cov': cov,
+            'shrink': shrink
+        }
+        stats_list.append(stats)
+        
+        # Prefer 252 (1 year) as the reporting standard for risk metrics
+        # If 252 is not processed yet, or if this is 252, set it. 
+        # Finally fallback to the last (longest) one if 252 isn't found.
+        if reporting_stats is None or w == 252:
+            reporting_stats = stats
+        elif reporting_stats['window'] != 252 and w > reporting_stats['window']:
+             # If we haven't found 252 yet, keep taking the longer window as it's more stable
+            reporting_stats = stats
+            
         print(f"  [Timing] Window {w}: {time.time() - t_w:.2f}s")
-    print(f"[Timing] Regime Analysis: {time.time() - t_regime:.2f}s")
+    print(f"[Timing] Ensemble Analysis: {time.time() - t_regime:.2f}s")
     
-    if not best_stats: raise ValueError("Optimization failed")
+    if not stats_list: raise ValueError("Optimization failed: No valid windows found")
+
+    # Helper to run a strategy across all windows and average the weights
+    def ensemble_run(func, args_extractor):
+        total_weights = np.zeros(stats_list[0]['mean'].shape[0])
+        valid_runs = 0
+        
+        for stats in stats_list:
+            try:
+                args = args_extractor(stats)
+                w = func(*args)
+                total_weights += w
+                valid_runs += 1
+            except Exception as e:
+                print(f"Optimization failed for window {stats['window']}: {e}")
+                continue
+        
+        if valid_runs == 0:
+             # Fallback to equal weight if everything fails
+            n = len(total_weights)
+            return np.ones(n) / n
+            
+        return total_weights / valid_runs
 
     def bundle(w):
         w_final = w
         
+        # Apply targets using the Reporting (Stable) Stats
         if target_value is not None and target_value > 0:
             if target_type == "volatility":
-                # target_value is annual vol % (e.g. 0.15)
-                w_final = apply_target_volatility(w, best_stats['cov'], target_value)
+                w_final = apply_target_volatility(w, reporting_stats['cov'], target_value)
             elif target_type == "var":
-                # target_value is daily VaR % (e.g. 1.5)
-                w_final = apply_target_var(w, best_stats['returns'], target_value)
+                w_final = apply_target_var(w, reporting_stats['returns'], target_value)
 
-
-        r, v, s = calculate_metrics(w_final, best_stats['mean'], best_stats['cov'], rf_rate)
-        rc = get_risk_contribution(w_final, best_stats['cov'])
-        hist, drawdowns = get_portfolio_history(w_final, best_stats['returns'])
+        # Calculate metrics using Reporting Stats
+        r, v, s = calculate_metrics(w_final, reporting_stats['mean'], reporting_stats['cov'], rf_rate)
+        rc = get_risk_contribution(w_final, reporting_stats['cov'])
+        hist, drawdowns = get_portfolio_history(w_final, reporting_stats['returns'])
         
         beta = 0.0
         if benchmark_rets is not None:
-            beta = calculate_beta(w_final, best_stats['returns'], benchmark_rets)
+            beta = calculate_beta(w_final, reporting_stats['returns'], benchmark_rets)
         
-        # --- CALCULATE VAR ---
-        var_95 = calculate_historical_var(w_final, best_stats['returns']) # <--- CALCULATION IS HERE
+        var_95 = calculate_historical_var(w_final, reporting_stats['returns'])
         
-        # --- CALCULATE CORRELATION VARIANCE (Std Dev of Correlations) ---
         corr_var = 0.0
         active_mask = w_final > 0.001
         if np.sum(active_mask) > 1:
-            # Subset covariance to active assets
-            sub_cov = best_stats['cov'].iloc[active_mask, active_mask]
+            sub_cov = reporting_stats['cov'].iloc[active_mask, active_mask]
             sub_std = np.sqrt(np.diag(sub_cov))
-            
             with np.errstate(divide='ignore', invalid='ignore'):
                 sub_corr = sub_cov.values / np.outer(sub_std, sub_std)
             sub_corr = np.nan_to_num(sub_corr, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            # Get off-diagonal elements
             off_diag = sub_corr[~np.eye(sub_corr.shape[0], dtype=bool)]
             corr_var = np.std(off_diag)
 
-        risk_data = {"tickers": list(best_stats['cov'].columns), "weights": np.round(w_final * 100, 1).tolist(), "risk_contribution": np.round(rc * 100, 1).tolist()}
+        risk_data = {"tickers": list(reporting_stats['cov'].columns), "weights": np.round(w_final * 100, 1).tolist(), "risk_contribution": np.round(rc * 100, 1).tolist()}
         
         return {
             "weights": w_final,
@@ -209,35 +238,43 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, benchmark_rets=None,
         }
 
     t_strat = time.time()
+    
+    # Lambda helpers to extract arguments for each strategy from a 'stats' object
+    arg_rp = lambda s: (s['cov'],)
+    arg_rp_c = lambda s: (s['cov'], min_w, max_w)
+    arg_ms = lambda s: (s['mean'], s['cov'], rf_rate)
+    arg_ms_c = lambda s: (s['mean'], s['cov'], rf_rate, min_w, max_w)
+    arg_hrp = lambda s: (s['cov'],)
+    arg_mdp = lambda s: (s['cov'],)
+
     strategies = {
         "Risk Parity": {
-            "unconstrained": bundle(run_risk_parity(best_stats['cov'])),
-            "constrained": bundle(run_risk_parity(best_stats['cov'], min_w, max_w))
+            "unconstrained": bundle(ensemble_run(run_risk_parity, arg_rp)),
+            "constrained": bundle(ensemble_run(run_risk_parity, arg_rp_c))
         },
         "Max Sharpe": {
-            "unconstrained": bundle(run_max_sharpe(best_stats['mean'], best_stats['cov'], rf_rate)),
-            "constrained": bundle(run_max_sharpe(best_stats['mean'], best_stats['cov'], rf_rate, min_w, max_w))
+            "unconstrained": bundle(ensemble_run(run_max_sharpe, arg_ms)),
+            "constrained": bundle(ensemble_run(run_max_sharpe, arg_ms_c))
         },
         "HRP": {
-            "unconstrained": bundle(run_hrp(best_stats['cov'])),
-            "constrained": bundle(run_hrp(best_stats['cov']))
+            "unconstrained": bundle(ensemble_run(run_hrp, arg_hrp)),
+            "constrained": bundle(ensemble_run(run_hrp, arg_hrp))
         },
         "MDP": {
-            "unconstrained": bundle(run_mdp(best_stats['cov'])),
-            "constrained": bundle(run_mdp(best_stats['cov']))
+            "unconstrained": bundle(ensemble_run(run_mdp, arg_mdp)),
+            "constrained": bundle(ensemble_run(run_mdp, arg_mdp))
         }
     }
     print(f"[Timing] Strategy Calculation: {time.time() - t_strat:.2f}s")
 
-    std = np.sqrt(np.diag(best_stats['cov']))
-    corr_matrix = best_stats['cov'] / np.outer(std, std)
+    # Use reporting stats for correlation matrix visualization
+    std = np.sqrt(np.diag(reporting_stats['cov']))
+    corr_matrix = reporting_stats['cov'] / np.outer(std, std)
 
-    # Also calculate raw correlation from the original returns
-    raw_cov = best_stats['returns'].cov()
+    raw_cov = reporting_stats['returns'].cov()
     raw_std = np.sqrt(np.diag(raw_cov))
     raw_corr_matrix = raw_cov / np.outer(raw_std, raw_std)
 
-    # Sort by Average Correlation (Ascending: Uncorrelated/Inverse -> Highly Correlated)
     avg_corr = corr_matrix.mean(axis=1)
     sorted_tickers = avg_corr.sort_values(ascending=True).index
     sorted_matrix = corr_matrix.loc[sorted_tickers, sorted_tickers]
@@ -247,10 +284,10 @@ def find_optimal_allocations(prices, min_w, max_w, rf_rate, benchmark_rets=None,
     raw_corr_data = {"tickers": list(sorted_raw_matrix.columns), "matrix": np.round(sorted_raw_matrix.values, 2).tolist()}
     
     return {
-        "lookback_days": int(best_window),
-        "shrinkage": best_stats['shrink'],
+        "lookback_days": int(reporting_stats['window']),
+        "shrinkage": reporting_stats['shrink'],
         "strategies": strategies,
         "correlation": {"shrunk": shrunk_corr_data, "raw": raw_corr_data},
-        "debug_cov": best_stats['cov'],
-        "debug_mean": best_stats['mean']
+        "debug_cov": reporting_stats['cov'],
+        "debug_mean": reporting_stats['mean']
     }
