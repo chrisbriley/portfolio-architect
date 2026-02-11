@@ -68,10 +68,10 @@ Portfolio Architect is a full-stack application designed for robust portfolio op
   - [x] Extract business logic from `app.py` into a Service Layer (`PortfolioService`).
   - [x] Abstract data fetching into a Data Access Object (DAO) or Provider pattern (`MarketDataProvider`).
   - [x] Implement structured logging and request validation (using Pydantic).
-- [ ] **Frontend: State Management & Architecture**
-  - Extract logic into Custom Hooks (`usePortfolioOptimization`).
-  - Centralize API calls in a dedicated client module.
-  - Implement Context API for global state (e.g., settings, saved portfolios).
+- [x] **Frontend: State Management & Architecture**
+  - [x] Extract logic into Custom Hooks (`usePortfolioOptimization`, `useLeverageScaling`).
+  - [x] Centralize API calls in a dedicated client module (`portfolioApi.js`).
+  - [x] Implement Context API for global state (`PortfolioProvider`).
 - [ ] **Infrastructure & DevOps**
   - Add Dockerization (`Dockerfile`, `docker-compose.yml`).
   - Set up CI/CD for automated testing and linting.
