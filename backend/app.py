@@ -4,6 +4,8 @@ import traceback
 import logging
 from services.portfolio_service import PortfolioService
 
+import os
+
 # Configure structured logging
 logging.basicConfig(
     level=logging.INFO,
@@ -26,10 +28,11 @@ def optimize_portfolio():
         result, status_code = portfolio_service.optimize_portfolio(request.json)
         return jsonify(result), status_code
     except Exception as e:
-        print(f"Error in optimize_portfolio: {e}")
+        logger.error(f"Error in optimize_portfolio: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Defaulting to 5001 as previously used
-    app.run(debug=True, port=5001)
+    port = int(os.environ.get('PORT', 5001))
+    debug = os.environ.get('FLASK_ENV') == 'development'
+    app.run(debug=debug, host='0.0.0.0', port=port)

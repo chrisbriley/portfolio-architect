@@ -75,7 +75,7 @@ Portfolio Architect is a full-stack application designed for robust portfolio op
 - [x] **Infrastructure & DevOps**
   - [x] Add Dockerization (`Dockerfile`, `docker-compose.yml`).
   - [x] Set up CI/CD for automated testing and linting (GitHub Actions).
-  - [ ] Implement comprehensive environment variable management.
+  - [x] Implement comprehensive environment variable management (`.env.example`).
 
 ### Feature Enhancements
 - [ ] Add support for international exchanges.
