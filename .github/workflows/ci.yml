@@ -1,0 +1,48 @@
+name: CI - Portfolio Architect
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        
+    - name: Install Backend Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r backend/requirements.txt
+        
+    - name: Run Backend Tests
+      run: |
+        export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+        python -m unittest backend/portfolio_lib/test_portfolio_lib.py
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+        cache: 'npm'
+        cache-dependency-path: client/package-lock.json
+        
+    - name: Install Frontend Dependencies
+      working-directory: client
+      run: npm install
+      
+    - name: Run Frontend Tests
+      working-directory: client
+      run: npm test -- --watchAll=false
