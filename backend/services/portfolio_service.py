@@ -1,4 +1,5 @@
 import time
+import logging
 import numpy as np
 import pandas as pd
 from portfolio_lib.optimizers import (
@@ -10,48 +11,60 @@ from portfolio_lib.optimizers import (
 )
 from portfolio_lib.visuals import generate_dendrogram_image, generate_efficient_frontier
 from portfolio_lib.data import MarketDataProvider
+from services.schemas import OptimizeRequest
+
+logger = logging.getLogger(__name__)
 
 class PortfolioService:
     def __init__(self, data_provider=None):
         self.data_provider = data_provider or MarketDataProvider()
 
-    def optimize_portfolio(self, data):
+    def optimize_portfolio(self, data: dict):
         start_total = time.time()
-        tickers = data.get('tickers', [])
-        min_w = float(data.get('min_weight', 0)) / 100.0
-        max_w = float(data.get('max_weight', 100)) / 100.0
-        target_mode = data.get('target_mode', 'volatility')
-        target_val_input = float(data.get('target_value', 0))
-        target_vol_input = float(data.get('target_volatility', 0))
         
-        if not tickers or len(tickers) < 2:
-            return {"error": "Need 2+ tickers."}, 400
+        # 0. Request Validation
+        try:
+            req = OptimizeRequest(**data)
+        except Exception as e:
+            logger.error(f"Validation error for tickers {data.get('tickers')}: {e}")
+            return {"error": str(e)}, 400
 
-        if target_val_input > 0:
+        tickers = req.tickers
+        min_w = req.min_weight / 100.0
+        max_w = req.max_weight / 100.0
+        target_mode = req.target_mode
+        
+        if req.target_value > 0:
             if target_mode == 'volatility':
-                target_value = target_val_input / 100.0
+                target_value = req.target_value / 100.0
             else:
-                target_value = target_val_input
+                target_value = req.target_value
         else:
             target_value = None
+
+        logger.info(f"Optimizing portfolio for tickers: {tickers} (mode: {target_mode})")
 
         rf_rate = self.data_provider.get_risk_free_rate()
         
         benchmark_tickers = ["SPY", "BND", "GLD", "SHY", "TLT"]
         all_tickers = list(set(tickers + benchmark_tickers))
         
-        # Use Data Provider to fetch prices
-        all_prices = self.data_provider.fetch_prices(all_tickers, period="3y")
+        try:
+            all_prices = self.data_provider.fetch_prices(all_tickers, period="3y")
+        except Exception as e:
+            logger.error(f"Error fetching prices: {e}")
+            return {"error": "Failed to fetch market data."}, 500
         
         valid_tickers = [t for t in tickers if t in all_prices.columns]
         if len(valid_tickers) < 2:
+            logger.warning(f"Insufficient valid tickers: {valid_tickers}")
             return {"error": "Need 2+ valid tickers."}, 400
         
         prices = all_prices[valid_tickers].dropna()
         if prices.shape[0] < 30:
+            logger.warning(f"Insufficient history for tickers {valid_tickers}: {prices.shape[0]} days")
             return {"error": "Insufficient history."}, 400
         
-        # Use Data Provider to fetch asset names
         asset_names = self.data_provider.get_asset_names(valid_tickers)
 
         spy_rets = None
@@ -59,7 +72,11 @@ class PortfolioService:
             spy_rets = all_prices["SPY"].pct_change().dropna()
 
         # 1. Main Optimization
-        result = find_optimal_allocations(prices, min_w, max_w, rf_rate, spy_rets, target_value, target_mode)
+        try:
+            result = find_optimal_allocations(prices, min_w, max_w, rf_rate, spy_rets, target_value, target_mode)
+        except Exception as e:
+            logger.error(f"Optimization failed: {e}")
+            return {"error": "Optimization engine error."}, 500
         
         # 2. Visuals
         dendrogram_b64 = generate_dendrogram_image(result['debug_cov'])
@@ -100,6 +117,7 @@ class PortfolioService:
                     "risk_decomposition": s_data[mode]['risk_decomposition']
                 }
 
+        logger.info(f"Optimization complete in {time.time() - start_total:.2f}s")
         return {
             "status": "success",
             "meta": {
