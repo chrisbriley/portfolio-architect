@@ -1,7 +1,6 @@
 import time
-import yfinance as yf
-import pandas as pd
 import numpy as np
+import pandas as pd
 from portfolio_lib.optimizers import (
     find_optimal_allocations, 
     calculate_metrics, 
@@ -10,25 +9,11 @@ from portfolio_lib.optimizers import (
     calculate_historical_var
 )
 from portfolio_lib.visuals import generate_dendrogram_image, generate_efficient_frontier
-from portfolio_lib.data import get_risk_free_rate
+from portfolio_lib.data import MarketDataProvider
 
 class PortfolioService:
-    def __init__(self):
-        self.name_cache = {}
-
-    def get_asset_names(self, tickers):
-        asset_names = {}
-        for t in tickers:
-            if t in self.name_cache:
-                asset_names[t] = self.name_cache[t]
-            else:
-                try:
-                    name = yf.Ticker(t).info.get('longName', t)
-                    asset_names[t] = name
-                    self.name_cache[t] = name
-                except:
-                    asset_names[t] = t
-        return asset_names
+    def __init__(self, data_provider=None):
+        self.data_provider = data_provider or MarketDataProvider()
 
     def optimize_portfolio(self, data):
         start_total = time.time()
@@ -39,8 +24,6 @@ class PortfolioService:
         target_val_input = float(data.get('target_value', 0))
         target_vol_input = float(data.get('target_volatility', 0))
         
-        target_vol = target_vol_input / 100.0 if target_vol_input > 0 else None
-
         if not tickers or len(tickers) < 2:
             return {"error": "Need 2+ tickers."}, 400
 
@@ -52,17 +35,13 @@ class PortfolioService:
         else:
             target_value = None
 
-        rf_rate = get_risk_free_rate()
+        rf_rate = self.data_provider.get_risk_free_rate()
         
         benchmark_tickers = ["SPY", "BND", "GLD", "SHY", "TLT"]
         all_tickers = list(set(tickers + benchmark_tickers))
         
-        t0 = time.time()
-        raw = yf.download(all_tickers, period="3y", auto_adjust=True, progress=False)
-        try:
-            all_prices = raw['Close'] if 'Close' in raw.columns and isinstance(raw.columns, pd.MultiIndex) else raw['Close']
-        except:
-            all_prices = raw
+        # Use Data Provider to fetch prices
+        all_prices = self.data_provider.fetch_prices(all_tickers, period="3y")
         
         valid_tickers = [t for t in tickers if t in all_prices.columns]
         if len(valid_tickers) < 2:
@@ -72,23 +51,21 @@ class PortfolioService:
         if prices.shape[0] < 30:
             return {"error": "Insufficient history."}, 400
         
-        asset_names = self.get_asset_names(valid_tickers)
+        # Use Data Provider to fetch asset names
+        asset_names = self.data_provider.get_asset_names(valid_tickers)
 
         spy_rets = None
         if "SPY" in all_prices.columns:
             spy_rets = all_prices["SPY"].pct_change().dropna()
 
         # 1. Main Optimization
-        t1 = time.time()
         result = find_optimal_allocations(prices, min_w, max_w, rf_rate, spy_rets, target_value, target_mode)
         
         # 2. Visuals
-        t2 = time.time()
         dendrogram_b64 = generate_dendrogram_image(result['debug_cov'])
         frontier_cloud = generate_efficient_frontier(result['debug_mean'], result['debug_cov'])
 
         # 3. Benchmarks
-        t3 = time.time()
         benchmarks = self._get_benchmark_data(benchmark_tickers, all_prices, prices.index, rf_rate)
 
         # 4. Recent Prices
